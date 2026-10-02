@@ -344,6 +344,7 @@ long ksu_handle_execveat_sucompat_internal(const char __user **filename_user, in
 
 static inline int do_ksu_handle_execveat_sucompat(int *fd, const char *filename, struct user_arg_ptr *argv)
 {
+    const struct cred *old_cred;
     struct ksu_sulog_pending_event *pending_sucompat = NULL;
     struct path kpath;
     bool is_allowed = ksu_is_allow_uid_for_current(ksu_get_uid_t(current_uid()));
@@ -368,19 +369,20 @@ static inline int do_ksu_handle_execveat_sucompat(int *fd, const char *filename,
 
     pr_info("do_execveat_common su found\n");
 
-    escape_with_root_profile();
-
-    pending_sucompat = ksu_sulog_capture_sucompat_manual(filename, *argv, GFP_KERNEL);
-
-    // We are only check ksud exists
-    // In manual hook, we can't try exec ksud, and detect exec success or not
-    if (kern_path(KSUD_PATH, LOOKUP_FOLLOW, &kpath)) {
-        pr_info("sucompat: /data/adb/ksud not found, fallback to /system/bin/sh");
-        memcpy((void *)filename, sh_path, sizeof(sh_path));
-        goto out;
+    old_cred = override_creds(ksu_cred);
+    if (is_ksud_exists()) {
+        pr_info("%s su->sh!\n", __func__);
+        memcpy((void *)((*filename)->name), sh_path, sizeof(sh_path));
+    } else {
+        pr_info("no ksud found, don't process execve for su!");
+        revert_creds(old_cred);
+        return -EINVAL;
     }
 
-    path_put(&kpath);
+    revert_creds(old_cred);
+    pending_sucompat = ksu_sulog_capture_sucompat_manual(filename, *argv, GFP_KERNEL);
+
+    escape_with_root_profile();
     memcpy((void *)filename, ksud_path, sizeof(ksud_path));
 out:
     ksu_sulog_emit_pending(pending_sucompat, 0, GFP_KERNEL);
